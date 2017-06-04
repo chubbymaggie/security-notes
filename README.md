@@ -16,6 +16,225 @@ This work is licensed under a [Creative Commons Attribution-NonCommercial-ShareA
 
 ## The Notes Themselves
 
+### Return Oriented Programming
+
+Written on Jun 4 2017
+
+> Influenced by [this](https://www.youtube.com/watch?v=iwRSFlZoSCM)
+> awesome live stream by Gynvael Coldwind, where he discusses the
+> basics of ROP, and gives a few tips and tricks
+
+Return Oriented Programming (ROP) is one of the classic exploitation
+techniques, that is used to bypass the NX (non executable memory)
+protection. Microsoft has incorporated NX as DEP (data execution
+prevention). Even Linux etc, have it effective, which means that with
+this protection, you could no longer place shellcode onto heap/stack
+and have it execute just by jumping to it. So now, to be able to
+execute code, you jump into pre-existing code (main binary, or its
+libraries -- libc, ldd etc on Linux; kernel32, ntdll etc on
+Windows). ROP comes into existence by re-using fragments of this code
+that is already there, and figuring out a way to combine those
+fragments into doing what you want to do (which is of course, HACK THE
+PLANET!!!).
+
+Originally, ROP started with ret2libc, and then became more advanced
+over time by using many more small pieces of code. Some might say that
+ROP is now "dead", due to additional protections to mitigate it, but
+it still can be exploited in a lot of scenarios (and definitely
+necessary for many CTFs).
+
+The most important part of ROP, is the gadgets. Gadgets are "usable
+pieces of code for ROP". That usually means pieces of code that end
+with a `ret` (but other kinds of gadgets might also be useful; such as
+those ending with `pop eax; jmp eax` etc). We chain these gadgets
+together to form the exploit, which is known as the _ROP chain_.
+
+One of the most important assumptions of ROP is that you have control
+over the stack (i.e., the stack pointer points to a buffer that you
+control). If this is not true, then you will need to apply other
+tricks (such as stack pivoting) to gain this control before building a
+ROP chain.
+
+How do you extract gadgets? Use downloadable tools (such
+as [ropgadget](http://shell-storm.org/project/ROPgadget/)) or online
+tool (such as [ropshell](http://ropshell.com/)) or write your own
+tools (might be more useful for more difficult challenges sometimes,
+since you can tweak it to the specific challenge if need
+be). Basically, we just need the addresses that we can jump to for
+these gadgets. This is where there might be a problem with ASLR etc
+(in which case, you get a leak of the address, before moving on to
+actually doing ROP).
+
+So now, how do we use these gadgets to make a ropchain? We first look
+for "basic gadgets". These are gadgets that can do _simple_ tasks for
+us (such as `pop ecx; ret`, which can be used to load a value into ecx
+by placing the gadget, followed by the value to be loaded, followed by
+rest of chain, which is returned to after the value is loaded). The
+most useful basic gadgets, are usually "set a register", "store
+register value at address pointed to by register", etc.
+
+We can build up from these primitive functions to gain higher level
+functionality (similar to my post
+titled [exploitation abstraction](#exploitation-abstraction)). For
+example, using the set-register, and store-value-at-address gadgets,
+we can come up with a "poke" function, that lets us set any specific
+address with a specific value. Using this, we can build a
+"poke-string" function that lets us store any particular string at any
+particular location in memory. Now that we have poke-string, we are
+basically almost done, since we can create any structures that we want
+in memory, and can also call any functions we want with the parameters
+we want (since we can set-register, and can place values on stack).
+
+One of the most important reasons to build from these lower order
+primitives to larger functions that do more complex things, is to
+reduce the chances of making mistakes (which is common in ROP
+otherwise).
+
+There are more complex ideas, techniques, and tips for ROP, but that
+is possibly a topic for a separate note, for a different time :)
+
+PS: Gyn has a blogpost
+on [Return-Oriented Exploitation](http://gynvael.coldwind.pl/?id=149)
+that might be worth a read.
+
+### Genetic Fuzzing
+
+Written on May 27 2017; extended on May 29 2017
+
+> Influenced by [this](https://www.youtube.com/watch?v=JhsHGms_7JQ)
+> amazing live stream by Gynvael Coldwind, where he talks about the
+> basic theory behind genetic fuzzing, and starts to build a basic
+> genetic fuzzer.  He then proceeds to complete the implementation
+> in [this](https://www.youtube.com/watch?v=HN_tI601jNU) live stream.
+
+"Advanced" fuzzing (compared to a blind fuzzer, described in
+my ["Basics of Fuzzing"](#basics-of-fuzzing) note). It also
+modifies/mutates bytes etc, but it does it a little bit smarter than
+the blind "dumb" fuzzer.
+
+Why do we need a genetic fuzzer?
+
+Some programs might be "nasty" towards dumb fuzzers, since it is
+possible that a vulnerability might require a whole bunch of
+conditions to be satisfied to be reached. In a dumb fuzzer, we have
+very low probability of this happening since it doesn't have any idea
+if it is making any progress or not. As a specific example, if we have
+the code `if a: if b: if c: if d: crash!` (let's call it the CRASHER
+code), then in this case we need 4 conditions to be satisfied to crash
+the program. However, a dumb fuzzer might be unable to get past the
+`a` condition, just because there is very low chance that all 4
+mutations `a`, `b`, `c`, `d`, happen at same time. In fact, even if it
+progresses by doing just `a`, the next mutation might go back to `!a`
+just because it doesn't know anything about the program.
+
+Wait, when does this kind of "bad case" program show up?
+
+It is quite common in file format parsers, to take one example. To
+reach some specific code paths, one might need to go past multiple
+checks "this value must be this, and that value must be that, and some
+other value must be something of something else" and so
+on. Additionally, almost no real world software is "uncomplicated",
+and most software has many many many possible code paths, some of
+which can be accessed only after many things in the state get set up
+correctly. Thereby, many of these programs' code paths are basically
+inaccessible to dumb fuzzers. Additionally, sometimes, some paths
+might be completely inaccessible (rather than just crazily improbable)
+due to not enough mutations done whatsoever. If any of these paths
+have bugs, a dumb fuzzer would never be able to find them.
+
+So how do we do better than dumb fuzzers?
+
+Consider the Control Flow Graph (CFG) of the above mentioned CRASHER
+code. If by chance a dumb fuzzer suddenly got `a` correct, then too it
+would not recognize that it reached a new node, but it would continue
+ignoring this, discarding the sample. On the other hand, what AFL (and
+other genetic or "smart" fuzzers) do, is they recognize this as a new
+piece of information ("a newly reached path") and store this sample as
+a new initial point into the corpus. What this means is that now the
+fuzzer can start from the `a` block and move further. Of course,
+sometimes, it might go back to the `!a` from the `a` sample, but most
+of the time, it will not, and instead might be able to reach `b`
+block. This again is a new node reached, so adds a new sample into the
+corpus. This continues, allowing more and more possible paths to be
+checked, and finally reaches the `crash!`.
+
+Why does this work?
+
+By adding mutated samples into the corpus, that explore the graph more
+(i.e. reach parts not explored before), we can reach previously
+unreachable areas, and can thus fuzz such areas. Since we can fuzz
+such areas, we might be able to uncover bugs in those regions.
+
+Why is it called genetic fuzzing?
+
+This kind of "smart" fuzzing is kind of like genetic
+algorithms. Mutation and crossover of specimens causes new
+specimens. We keep specimens which are better suited to the conditions
+which are tested. In this case, the condition is "how many nodes in
+the graph did it reach?". The ones that traverse more can be
+kept. This is not exactly like genetic algos, but is a variation
+(since we keep all specimens that traverse unexplored territory, and
+we don't do crossover) but is sufficiently similar to get the same
+name. Basically, choice from pre-existing population, followed by
+mutation, followed by fitness testing (whether it saw new areas), and
+repeat.
+
+Wait, so we just keep track of unreached nodes?
+
+Nope, not really. AFL keeps track of edge traversals in the graph,
+rather than nodes. Additionally, it doesn't just say "edge travelled
+or not", it keeps track of how many times an edge was traversed. If an
+edge is traversed 0, 1, 2, 4, 8, 16, ... times, it is considered as a
+"new path" and leads to addition into the corpus. This is done because
+looking at edges rather than nodes is a better way to distinguish
+between application states, and using an exponentially increasing
+count of the edge traversals gives more info (an edge traversed once
+is quite different from traversed twice, but traversed 10 is not too
+different from 11 times).
+
+So, what and all do you need in a genetic fuzzer?
+
+We need 2 things, the first part is called the tracer (or tracing
+instrumentation). It basically tells you which instructions were
+executed in the application. AFL does this in a simple way by jumping
+in between the compilation stages. After the generation of the
+assembly, but before assembling the program, it looks for basic blocks
+(by looking for endings, by checking for jump/branch type of
+instructions), and adds code to each block that marks the block/edge
+as executed (probably into some shadow memory or something). If we
+don't have source code, we can use other techniques for tracing (such
+as pin, debugger, etc). Turns out, even ASAN can give coverage
+information (see docs for this).
+
+For the second part, we then use the coverage information given by the
+tracer to keep track of new paths as they appear, and add those
+generated samples into the corpus for random selection in the future.
+
+There are multiple mechanisms to make the tracer. They can be software
+based, or hardware based. For hardware based, there are, for example,
+some Intel CPU features exist where given a buffer in memory, it
+records information of all basic blocks traversed into that buffer. It
+is a kernel feature, so the kernel has to support it and provide it as
+an API (which Linux does). For software based, we can do it by adding
+in code, or using a debugger (using temporary breakpoints, or through
+single stepping), or use address sanitizer's tracing abilities, or use
+hooks, or emulators, or a whole bunch of other ways.
+
+Another way to differentiate the mechanisms is by either black-box
+tracing (where you can only use the unmodified binary), or softare
+white-box tracing (where you have access to the source code, and
+modify the code itself to add in tracing code).
+
+AFL uses software instrumentation during compilation as the method for
+tracing (or through QEMU emulation). Honggfuzz supports both software
+and hardware based tracing methods. Other smart fuzzers might be
+different. The one that Gyn builds uses the tracing/coverage provided
+by address sanitizer (ASAN).
+
+Some fuzzers use "speedhacks" (i.e. increase fuzzing speed) such as by
+making a forkserver or other such ideas. Might be worth looking into
+these at some point :)
+
 ### Basics of Fuzzing
 
 Written on 20th April 2017
